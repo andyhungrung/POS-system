@@ -1,15 +1,1245 @@
 <!DOCTYPE html>
 <html lang="zh-TW">
-  <head>
+<head>
     <meta charset="utf-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1, user-scalable=no" />
-    <meta name="theme-color" content="#000000" />
-    <meta name="description" content="本地端POS銷售系統" />
     <title>POS銷售系統</title>
     <script src="https://cdn.tailwindcss.com"></script>
-  </head>
-  <body>
-    <noscript>您需要啟用JavaScript才能運行此應用程式。</noscript>
+    <script src="https://unpkg.com/react@18/umd/react.development.js"></script>
+    <script src="https://unpkg.com/react-dom@18/umd/react-dom.development.js"></script>
+    <script src="https://unpkg.com/@babel/standalone/babel.min.js"></script>
+    <script src="https://unpkg.com/lucide-react@0.263.1/dist/umd/lucide-react.js"></script>
+    <script src="https://unpkg.com/recharts@2.8.0/umd/Recharts.js"></script>
+    <style>
+        /* 防止縮放 */
+        * {
+            -webkit-touch-callout: none;
+            -webkit-user-select: none;
+            -khtml-user-select: none;
+            -moz-user-select: none;
+            -ms-user-select: none;
+            user-select: none;
+        }
+        
+        /* 輸入框例外，需要選擇 */
+        input, textarea {
+            -webkit-user-select: text;
+            -moz-user-select: text;
+            -ms-user-select: text;
+            user-select: text;
+        }
+
+        /* 手機模式下的特殊樣式 */
+        @media (max-width: 768px) {
+            .mobile-stack {
+                flex-direction: column !important;
+            }
+            
+            .mobile-full-width {
+                width: 100% !important;
+            }
+            
+            .mobile-border {
+                border-left: none !important;
+                border-top: 1px solid #e5e7eb !important;
+            }
+            
+            .mobile-hidden {
+                display: none !important;
+            }
+            
+            .mobile-tab-button {
+                display: block !important;
+            }
+        }
+
+        /* 大螢幕模式下隱藏切換按鈕 */
+        @media (min-width: 769px) {
+            .mobile-tab-button {
+                display: none !important;
+            }
+        }
+        
+        /* 購物車固定高度 */
+        .cart-container {
+            max-height: 50vh;
+            min-height: 300px;
+        }
+        
+        @media (max-width: 768px) {
+            .cart-container {
+                max-height: 40vh;
+                min-height: 250px;
+            }
+        }
+    </style>
+</head>
+<body>
     <div id="root"></div>
-  </body>
+
+    <script type="text/babel">
+        const { useState, useEffect } = React;
+        const { ShoppingCart, Package, BarChart3, Settings, Plus, Trash2, Edit, Download, Upload, Save, X, Menu } = LucideReact;
+        const { PieChart, Pie, Cell, ResponsiveContainer, BarChart, Bar, XAxis, YAxis, CartesianGrid, Tooltip, Legend } = Recharts;
+
+        // IndexedDB 配置
+        const DB_NAME = 'POSSystemDB';
+        const DB_VERSION = 2;
+        const PRODUCTS_STORE = 'products';
+        const SALES_STORE = 'sales';
+
+        // 圓餅圖顏色配置
+        const COLORS = [
+            '#0088FE', '#00C49F', '#FFBB28', '#FF8042', '#8884D8', 
+            '#82CA9D', '#FFC658', '#FF7300', '#00C4A7', '#8DD1E1'
+        ];
+
+        // IndexedDB 初始化
+        const initDB = () => {
+            return new Promise((resolve, reject) => {
+                if (!window.indexedDB) {
+                    reject(new Error('瀏覽器不支援 IndexedDB'));
+                    return;
+                }
+
+                console.log('初始化 IndexedDB...');
+                const request = indexedDB.open(DB_NAME, DB_VERSION);
+                
+                request.onerror = (event) => {
+                    console.error('IndexedDB 開啟失敗:', event.target.error);
+                    reject(event.target.error);
+                };
+                
+                request.onsuccess = (event) => {
+                    console.log('IndexedDB 開啟成功');
+                    const db = event.target.result;
+                    resolve(db);
+                };
+                
+                request.onupgradeneeded = (event) => {
+                    console.log('IndexedDB 需要升級...');
+                    const db = event.target.result;
+                    
+                    if (db.objectStoreNames.contains(PRODUCTS_STORE)) {
+                        db.deleteObjectStore(PRODUCTS_STORE);
+                    }
+                    if (db.objectStoreNames.contains(SALES_STORE)) {
+                        db.deleteObjectStore(SALES_STORE);
+                    }
+                    
+                    const productStore = db.createObjectStore(PRODUCTS_STORE, { keyPath: 'id' });
+                    productStore.createIndex('name', 'name', { unique: false });
+                    console.log('Products store 創建完成');
+                    
+                    const salesStore = db.createObjectStore(SALES_STORE, { keyPath: 'id' });
+                    salesStore.createIndex('timestamp', 'timestamp', { unique: false });
+                    console.log('Sales store 創建完成');
+                };
+
+                request.onblocked = () => {
+                    console.warn('IndexedDB 被阻塞，請關閉其他標籤頁');
+                    reject(new Error('IndexedDB 被阻塞'));
+                };
+            });
+        };
+
+        // IndexedDB 操作函數
+        const dbOperation = (storeName, operation, data = null) => {
+            return new Promise(async (resolve, reject) => {
+                try {
+                    console.log(`執行 DB 操作: ${operation} on ${storeName}`, data);
+                    
+                    const db = await initDB();
+                    const transaction = db.transaction([storeName], operation === 'get' || operation === 'getAll' ? 'readonly' : 'readwrite');
+                    const store = transaction.objectStore(storeName);
+                    
+                    let request;
+                    switch (operation) {
+                        case 'add':
+                            request = store.add(data);
+                            break;
+                        case 'put':
+                            request = store.put(data);
+                            break;
+                        case 'delete':
+                            request = store.delete(data);
+                            break;
+                        case 'get':
+                            request = store.get(data);
+                            break;
+                        case 'getAll':
+                            request = store.getAll();
+                            break;
+                        default:
+                            reject(new Error('未知操作: ' + operation));
+                            return;
+                    }
+                    
+                    request.onsuccess = (event) => {
+                        console.log(`DB 操作 ${operation} 成功:`, event.target.result);
+                        resolve(event.target.result);
+                    };
+                    
+                    request.onerror = (event) => {
+                        console.error(`DB 操作 ${operation} 失敗:`, event.target.error);
+                        reject(event.target.error);
+                    };
+                    
+                    transaction.oncomplete = () => {
+                        console.log(`Transaction ${operation} 完成`);
+                        db.close();
+                    };
+                    
+                    transaction.onerror = (event) => {
+                        console.error(`Transaction ${operation} 錯誤:`, event.target.error);
+                        db.close();
+                        reject(event.target.error);
+                    };
+                    
+                    transaction.onabort = () => {
+                        console.error(`Transaction ${operation} 被中止`);
+                        db.close();
+                        reject(new Error('Transaction 被中止'));
+                    };
+                    
+                } catch (error) {
+                    console.error('dbOperation 錯誤:', error);
+                    reject(error);
+                }
+            });
+        };
+
+        const POS = () => {
+            const [currentPage, setCurrentPage] = useState('sales');
+            const [products, setProducts] = useState([]);
+            const [sales, setSales] = useState([]);
+            const [cart, setCart] = useState([]);
+            const [cartTotal, setCartTotal] = useState(0);
+            const [showProductModal, setShowProductModal] = useState(false);
+            const [editingProduct, setEditingProduct] = useState(null);
+            const [manualProduct, setManualProduct] = useState({ name: '', price: '' });
+            const [filterStartDate, setFilterStartDate] = useState('');
+            const [filterEndDate, setFilterEndDate] = useState('');
+            const [showConfirmModal, setShowConfirmModal] = useState(false);
+            const [confirmMessage, setConfirmMessage] = useState('');
+            const [confirmAction, setConfirmAction] = useState(null);
+            const [showAlert, setShowAlert] = useState(false);
+            const [alertMessage, setAlertMessage] = useState('');
+            // 新增：手機模式下的視圖切換
+            const [mobileView, setMobileView] = useState('products'); // 'products' 或 'cart'
+
+            // 自定義確認對話框
+            const showConfirm = (message, action) => {
+                setConfirmMessage(message);
+                setConfirmAction(() => action);
+                setShowConfirmModal(true);
+            };
+
+            const handleConfirm = () => {
+                if (confirmAction) {
+                    confirmAction();
+                }
+                setShowConfirmModal(false);
+                setConfirmAction(null);
+            };
+
+            const handleCancel = () => {
+                setShowConfirmModal(false);
+                setConfirmAction(null);
+            };
+
+            // 自定義提示對話框
+            const showAlertMessage = (message) => {
+                setAlertMessage(message);
+                setShowAlert(true);
+            };
+
+            // 載入資料
+            useEffect(() => {
+                const initializeApp = async () => {
+                    console.log('應用程式初始化開始...');
+                    try {
+                        await loadProducts();
+                        await loadSales();
+                        console.log('應用程式初始化完成');
+                    } catch (error) {
+                        console.error('應用程式初始化失敗:', error);
+                        showAlertMessage('資料庫初始化失敗，某些功能可能無法正常使用。請重新整理頁面。');
+                    }
+                };
+                
+                initializeApp();
+            }, []);
+
+            // 計算購物車總額
+            useEffect(() => {
+                const total = cart.reduce((sum, item) => sum + (item.price * item.quantity), 0);
+                setCartTotal(total);
+            }, [cart]);
+
+            const loadProducts = async () => {
+                try {
+                    console.log('載入商品資料...');
+                    const allProducts = await dbOperation(PRODUCTS_STORE, 'getAll');
+                    console.log('載入的商品:', allProducts);
+                    setProducts(allProducts || []);
+                } catch (error) {
+                    console.error('載入商品失敗:', error);
+                    setProducts([]);
+                }
+            };
+
+            const loadSales = async () => {
+                try {
+                    console.log('載入銷售記錄...');
+                    const allSales = await dbOperation(SALES_STORE, 'getAll');
+                    console.log('載入的銷售記錄:', allSales);
+                    const sortedSales = (allSales || []).sort((a, b) => new Date(b.timestamp) - new Date(a.timestamp));
+                    setSales(sortedSales);
+                } catch (error) {
+                    console.error('載入銷售記錄失敗:', error);
+                    setSales([]);
+                }
+            };
+
+            // 商品管理
+            const saveProduct = async (product) => {
+                try {
+                    const productData = {
+                        id: product.id || Date.now().toString(),
+                        name: product.name,
+                        price: parseFloat(product.price),
+                        timestamp: new Date().toISOString()
+                    };
+                    
+                    await dbOperation(PRODUCTS_STORE, 'put', productData);
+                    loadProducts();
+                    setShowProductModal(false);
+                    setEditingProduct(null);
+                    showAlertMessage('商品儲存成功！');
+                } catch (error) {
+                    console.error('儲存商品失敗:', error);
+                    showAlertMessage('儲存商品失敗：' + (error.message || error));
+                }
+            };
+
+            const deleteProduct = async (productId, productName) => {
+                try {
+                    console.log('=== 刪除操作開始 ===');
+                    console.log('商品ID:', productId);
+                    console.log('商品名稱:', productName);
+                    
+                    await dbOperation(PRODUCTS_STORE, 'delete', productId);
+                    console.log('資料庫刪除成功');
+                    
+                    await loadProducts();
+                    console.log('商品列表重新載入完成');
+                    
+                    showAlertMessage(`商品「${productName}」刪除成功！`);
+                    console.log('=== 刪除操作完成 ===');
+                } catch (error) {
+                    console.error('刪除商品失敗:', error);
+                    showAlertMessage('刪除商品失敗：' + (error.message || error));
+                }
+            };
+
+            // 購物車管理
+            const addToCart = (product) => {
+                const existingItem = cart.find(item => item.id === product.id);
+                if (existingItem) {
+                    setCart(cart.map(item => 
+                        item.id === product.id 
+                            ? { ...item, quantity: item.quantity + 1 }
+                            : item
+                    ));
+                } else {
+                    setCart([...cart, { ...product, quantity: 1 }]);
+                }
+                
+                // 手機模式下，加入商品後自動切換到購物車視圖
+                if (window.innerWidth <= 768) {
+                    setMobileView('cart');
+                }
+            };
+
+            const addManualProduct = () => {
+                if (manualProduct.name && manualProduct.price) {
+                    const product = {
+                        id: 'manual_' + Date.now(),
+                        name: manualProduct.name,
+                        price: parseFloat(manualProduct.price)
+                    };
+                    addToCart(product);
+                    setManualProduct({ name: '', price: '' });
+                } else {
+                    showAlertMessage('請輸入商品名稱和價格');
+                }
+            };
+
+            const removeFromCart = (productId) => {
+                setCart(cart.filter(item => item.id !== productId));
+            };
+
+            const updateCartQuantity = (productId, quantity) => {
+                if (quantity <= 0) {
+                    removeFromCart(productId);
+                    return;
+                }
+                setCart(cart.map(item => 
+                    item.id === productId 
+                        ? { ...item, quantity: quantity }
+                        : item
+                ));
+            };
+
+            // 結帳
+            const checkout = async () => {
+                if (cart.length === 0) {
+                    showAlertMessage('購物車是空的');
+                    return;
+                }
+
+                try {
+                    const sale = {
+                        id: Date.now().toString(),
+                        items: cart,
+                        total: cartTotal,
+                        timestamp: new Date().toISOString()
+                    };
+                    
+                    await dbOperation(SALES_STORE, 'add', sale);
+                    setCart([]);
+                    loadSales();
+                    showAlertMessage(`結帳成功！總金額：$${cartTotal}`);
+                    
+                    // 結帳後在手機模式下切回商品選擇
+                    if (window.innerWidth <= 768) {
+                        setMobileView('products');
+                    }
+                } catch (error) {
+                    console.error('結帳失敗:', error);
+                    showAlertMessage('結帳失敗：' + (error.message || error));
+                }
+            };
+
+            // 報表功能
+            const getFilteredSales = () => {
+                let filtered = [...sales];
+                
+                if (filterStartDate) {
+                    filtered = filtered.filter(sale => new Date(sale.timestamp) >= new Date(filterStartDate));
+                }
+                
+                if (filterEndDate) {
+                    filtered = filtered.filter(sale => new Date(sale.timestamp) <= new Date(filterEndDate + ' 23:59:59'));
+                }
+                
+                return filtered;
+            };
+
+            const getProductAnalysis = () => {
+                const filteredSales = getFilteredSales();
+                const analysis = {};
+                
+                filteredSales.forEach(sale => {
+                    sale.items.forEach(item => {
+                        if (analysis[item.name]) {
+                            analysis[item.name].quantity += item.quantity;
+                            analysis[item.name].revenue += item.price * item.quantity;
+                        } else {
+                            analysis[item.name] = {
+                                name: item.name,
+                                quantity: item.quantity,
+                                revenue: item.price * item.quantity,
+                                price: item.price
+                            };
+                        }
+                    });
+                });
+                
+                return Object.values(analysis).sort((a, b) => b.revenue - a.revenue);
+            };
+
+            // 準備圓餅圖資料
+            const getPieChartData = () => {
+                const analysis = getProductAnalysis();
+                return analysis.map((item, index) => ({
+                    name: item.name,
+                    value: item.revenue,
+                    quantity: item.quantity,
+                    color: COLORS[index % COLORS.length]
+                }));
+            };
+
+            const getQuantityPieData = () => {
+                const analysis = getProductAnalysis();
+                return analysis.map((item, index) => ({
+                    name: item.name,
+                    value: item.quantity,
+                    revenue: item.revenue,
+                    color: COLORS[index % COLORS.length]
+                }));
+            };
+
+            // 自定義圓餅圖標籤
+            const renderCustomLabel = ({ cx, cy, midAngle, innerRadius, outerRadius, percent }) => {
+                if (percent < 0.05) return null;
+                
+                const RADIAN = Math.PI / 180;
+                const radius = innerRadius + (outerRadius - innerRadius) * 0.5;
+                const x = cx + radius * Math.cos(-midAngle * RADIAN);
+                const y = cy + radius * Math.sin(-midAngle * RADIAN);
+
+                return React.createElement('text', {
+                    x: x,
+                    y: y,
+                    fill: 'white',
+                    textAnchor: x > cx ? 'start' : 'end',
+                    dominantBaseline: 'central',
+                    fontSize: '12',
+                    fontWeight: 'bold'
+                }, `${(percent * 100).toFixed(0)}%`);
+            };
+
+            // 自定義Tooltip
+            const CustomTooltip = ({ active, payload, label }) => {
+                if (active && payload && payload.length) {
+                    const data = payload[0].payload;
+                    return React.createElement('div', {
+                        className: 'bg-white p-3 border rounded shadow-lg'
+                    }, [
+                        React.createElement('p', { className: 'font-semibold', key: 'name' }, data.name),
+                        React.createElement('p', { className: 'text-blue-600', key: 'revenue' }, `銷售金額: $${data.value || data.revenue}`),
+                        React.createElement('p', { className: 'text-green-600', key: 'quantity' }, `銷售數量: ${data.quantity || data.value} 件`)
+                    ]);
+                }
+                return null;
+            };
+
+            // 匯出功能
+            const exportToCSV = (data, filename) => {
+                if (!data || data.length === 0) {
+                    showAlertMessage('沒有資料可以匯出');
+                    return;
+                }
+
+                try {
+                    const headers = Object.keys(data[0]);
+                    const headerRow = headers.join(',');
+                    
+                    const csvRows = data.map(row => 
+                        headers.map(header => {
+                            const value = row[header];
+                            if (typeof value === 'string' && (value.includes(',') || value.includes('\n') || value.includes('"'))) {
+                                return `"${value.replace(/"/g, '""')}"`;
+                            }
+                            return value;
+                        }).join(',')
+                    );
+                    
+                    const csvContent = headerRow + '\n' + csvRows.join('\n');
+                    const BOM = '\uFEFF';
+                    const csvWithBOM = BOM + csvContent;
+                    
+                    const blob = new Blob([csvWithBOM], { 
+                        type: 'text/csv;charset=utf-8;' 
+                    });
+                    
+                    const link = document.createElement('a');
+                    const url = URL.createObjectURL(blob);
+                    link.setAttribute('href', url);
+                    link.setAttribute('download', filename);
+                    link.style.visibility = 'hidden';
+                    
+                    document.body.appendChild(link);
+                    link.click();
+                    document.body.removeChild(link);
+                    
+                    URL.revokeObjectURL(url);
+                    
+                    showAlertMessage('檔案匯出成功！');
+                } catch (error) {
+                    console.error('匯出CSV失敗:', error);
+                    showAlertMessage('匯出失敗：' + error.message);
+                }
+            };
+
+            const exportSalesData = () => {
+                const filteredSales = getFilteredSales();
+                
+                if (filteredSales.length === 0) {
+                    showAlertMessage('沒有銷售資料可以匯出');
+                    return;
+                }
+                
+                const exportData = filteredSales.map(sale => ({
+                    '銷售日期': new Date(sale.timestamp).toLocaleDateString('zh-TW'),
+                    '銷售時間': new Date(sale.timestamp).toLocaleTimeString('zh-TW'),
+                    '商品明細': sale.items.map(item => `${item.name}×${item.quantity}`).join('；'),
+                    '總金額': sale.total,
+                    '交易編號': sale.id
+                }));
+                
+                const filename = `銷售記錄_${new Date().toLocaleDateString('zh-TW').replace(/\//g, '-')}.csv`;
+                exportToCSV(exportData, filename);
+            };
+
+            const exportProductAnalysis = () => {
+                const analysis = getProductAnalysis();
+                
+                if (analysis.length === 0) {
+                    showAlertMessage('沒有商品分析資料可以匯出');
+                    return;
+                }
+                
+                const exportData = analysis.map((item, index) => ({
+                    '排名': index + 1,
+                    '商品名稱': item.name,
+                    '商品單價': item.price,
+                    '銷售數量': item.quantity,
+                    '銷售金額': item.revenue,
+                    '平均單次購買量': Math.round((item.quantity / getSalesCountForProduct(item.name)) * 100) / 100 || 0
+                }));
+                
+                const filename = `商品銷售分析_${new Date().toLocaleDateString('zh-TW').replace(/\//g, '-')}.csv`;
+                exportToCSV(exportData, filename);
+            };
+
+            // 輔助函數：計算商品被購買的次數
+            const getSalesCountForProduct = (productName) => {
+                const filteredSales = getFilteredSales();
+                return filteredSales.filter(sale => 
+                    sale.items.some(item => item.name === productName)
+                ).length;
+            };
+
+            // 備份與還原
+            const backupData = async () => {
+                try {
+                    const allProducts = await dbOperation(PRODUCTS_STORE, 'getAll');
+                    const allSales = await dbOperation(SALES_STORE, 'getAll');
+                    
+                    const backupData = {
+                        products: allProducts,
+                        sales: allSales,
+                        timestamp: new Date().toISOString(),
+                        version: DB_VERSION
+                    };
+                    
+                    const blob = new Blob([JSON.stringify(backupData, null, 2)], { type: 'application/json' });
+                    const link = document.createElement('a');
+                    const url = URL.createObjectURL(blob);
+                    link.setAttribute('href', url);
+                    link.setAttribute('download', `POS備份_${new Date().toLocaleDateString('zh-TW').replace(/\//g, '-')}.json`);
+                    document.body.appendChild(link);
+                    link.click();
+                    document.body.removeChild(link);
+                    
+                    URL.revokeObjectURL(url);
+                    showAlertMessage('資料備份完成！');
+                } catch (error) {
+                    console.error('備份失敗:', error);
+                    showAlertMessage('備份失敗：' + error.message);
+                }
+            };
+
+            const restoreData = (event) => {
+                const file = event.target.files[0];
+                if (!file) return;
+                
+                const reader = new FileReader();
+                reader.onload = async (e) => {
+                    try {
+                        const backupData = JSON.parse(e.target.result);
+                        
+                        showConfirm(
+                            '確定要還原資料嗎？這將覆蓋現有資料。',
+                            async () => {
+                                try {
+                                    for (const product of backupData.products) {
+                                        await dbOperation(PRODUCTS_STORE, 'put', product);
+                                    }
+                                    
+                                    for (const sale of backupData.sales) {
+                                        await dbOperation(SALES_STORE, 'put', sale);
+                                    }
+                                    
+                                    await loadProducts();
+                                    await loadSales();
+                                    showAlertMessage('資料還原完成！');
+                                } catch (error) {
+                                    console.error('還原過程失敗:', error);
+                                    showAlertMessage('還原過程失敗：' + error.message);
+                                }
+                            }
+                        );
+                    } catch (error) {
+                        console.error('還原失敗:', error);
+                        showAlertMessage('還原失敗，請確認檔案格式正確');
+                    }
+                };
+                reader.readAsText(file);
+                event.target.value = '';
+            };
+
+            // 商品編輯模態框
+            const ProductModal = () => {
+                const [formData, setFormData] = useState(editingProduct || { name: '', price: '' });
+
+                return React.createElement('div', {
+                    className: 'fixed inset-0 bg-black bg-opacity-50 flex items-center justify-center z-50 p-4'
+                }, React.createElement('div', {
+                    className: 'bg-white rounded-lg p-6 w-full max-w-md'
+                }, [
+                    React.createElement('div', {
+                        className: 'flex justify-between items-center mb-4',
+                        key: 'header'
+                    }, [
+                        React.createElement('h3', {
+                            className: 'text-lg font-semibold',
+                            key: 'title'
+                        }, editingProduct ? '編輯商品' : '新增商品'),
+                        React.createElement('button', {
+                            key: 'close',
+                            onClick: () => { setShowProductModal(false); setEditingProduct(null); },
+                            className: 'text-gray-400 hover:text-gray-600 p-2'
+                        }, React.createElement(X, { size: 20 }))
+                    ]),
+                    React.createElement('div', {
+                        className: 'space-y-4',
+                        key: 'form'
+                    }, [
+                        React.createElement('div', { key: 'name-field' }, [
+                            React.createElement('label', {
+                                className: 'block text-sm font-medium text-gray-700 mb-1',
+                                key: 'name-label'
+                            }, '商品名稱'),
+                            React.createElement('input', {
+                                key: 'name-input',
+                                type: 'text',
+                                value: formData.name,
+                                onChange: (e) => setFormData({ ...formData, name: e.target.value }),
+                                className: 'w-full border border-gray-300 rounded-md px-3 py-2 text-base',
+                                placeholder: '輸入商品名稱'
+                            })
+                        ]),
+                        React.createElement('div', { key: 'price-field' }, [
+                            React.createElement('label', {
+                                className: 'block text-sm font-medium text-gray-700 mb-1',
+                                key: 'price-label'
+                            }, '價格'),
+                            React.createElement('input', {
+                                key: 'price-input',
+                                type: 'number',
+                                value: formData.price,
+                                onChange: (e) => setFormData({ ...formData, price: e.target.value }),
+                                className: 'w-full border border-gray-300 rounded-md px-3 py-2 text-base',
+                                placeholder: '輸入價格',
+                                step: '0.01'
+                            })
+                        ]),
+                        React.createElement('div', {
+                            className: 'flex gap-2 pt-4',
+                            key: 'buttons'
+                        }, [
+                            React.createElement('button', {
+                                key: 'save-btn',
+                                onClick: () => saveProduct(formData),
+                                className: 'flex-1 bg-blue-600 text-white py-3 px-4 rounded-md hover:bg-blue-700 text-base font-medium',
+                                disabled: !formData.name || !formData.price
+                            }, '儲存'),
+                            React.createElement('button', {
+                                key: 'cancel-btn',
+                                onClick: () => { setShowProductModal(false); setEditingProduct(null); },
+                                className: 'flex-1 bg-gray-300 text-gray-700 py-3 px-4 rounded-md hover:bg-gray-400 text-base font-medium'
+                            }, '取消')
+                        ])
+                    ])
+                ]));
+            };
+
+            return React.createElement('div', {
+                className: 'h-screen bg-gray-100 flex flex-col'
+            }, [
+                // 頂部導航
+                React.createElement('div', {
+                    className: 'bg-white shadow-sm border-b',
+                    key: 'header'
+                }, React.createElement('div', {
+                    className: 'flex items-center justify-between px-4 md:px-6 py-4'
+                }, [
+                    React.createElement('h1', {
+                        className: 'text-xl md:text-2xl font-bold text-gray-800',
+                        key: 'title'
+                    }, 'POS系統'),
+                    React.createElement('div', {
+                        className: 'flex gap-1 md:gap-2',
+                        key: 'nav-buttons'
+                    }, [
+                        React.createElement('button', {
+                            key: 'sales-btn',
+                            onClick: () => setCurrentPage('sales'),
+                            className: `px-2 md:px-4 py-2 rounded-md flex items-center gap-1 md:gap-2 text-sm md:text-base ${
+                                currentPage === 'sales' ? 'bg-blue-600 text-white' : 'bg-gray-200 text-gray-700'
+                            }`
+                        }, [
+                            React.createElement(ShoppingCart, { size: 16, key: 'icon' }),
+                            React.createElement('span', { key: 'text', className: 'hidden sm:inline' }, '銷售')
+                        ]),
+                        React.createElement('button', {
+                            key: 'products-btn',
+                            onClick: () => setCurrentPage('products'),
+                            className: `px-2 md:px-4 py-2 rounded-md flex items-center gap-1 md:gap-2 text-sm md:text-base ${
+                                currentPage === 'products' ? 'bg-blue-600 text-white' : 'bg-gray-200 text-gray-700'
+                            }`
+                        }, [
+                            React.createElement(Package, { size: 16, key: 'icon' }),
+                            React.createElement('span', { key: 'text', className: 'hidden sm:inline' }, '商品')
+                        ]),
+                        React.createElement('button', {
+                            key: 'reports-btn',
+                            onClick: () => setCurrentPage('reports'),
+                            className: `px-2 md:px-4 py-2 rounded-md flex items-center gap-1 md:gap-2 text-sm md:text-base ${
+                                currentPage === 'reports' ? 'bg-blue-600 text-white' : 'bg-gray-200 text-gray-700'
+                            }`
+                        }, [
+                            React.createElement(BarChart3, { size: 16, key: 'icon' }),
+                            React.createElement('span', { key: 'text', className: 'hidden sm:inline' }, '報表')
+                        ]),
+                        React.createElement('button', {
+                            key: 'backup-btn',
+                            onClick: () => setCurrentPage('backup'),
+                            className: `px-2 md:px-4 py-2 rounded-md flex items-center gap-1 md:gap-2 text-sm md:text-base ${
+                                currentPage === 'backup' ? 'bg-blue-600 text-white' : 'bg-gray-200 text-gray-700'
+                            }`
+                        }, [
+                            React.createElement(Settings, { size: 16, key: 'icon' }),
+                            React.createElement('span', { key: 'text', className: 'hidden sm:inline' }, '備份')
+                        ])
+                    ])
+                ])),
+
+                // 主要內容
+                React.createElement('div', {
+                    className: 'flex-1 flex overflow-hidden',
+                    key: 'main-content'
+                }, [
+                    // 銷售頁面
+                    currentPage === 'sales' && React.createElement(React.Fragment, { key: 'sales-page' }, [
+                        // 手機模式切換按鈕
+                        React.createElement('div', {
+                            className: 'mobile-tab-button fixed bottom-4 left-1/2 transform -translate-x-1/2 z-40 flex bg-white rounded-full shadow-lg border overflow-hidden',
+                            key: 'mobile-tabs'
+                        }, [
+                            React.createElement('button', {
+                                key: 'products-tab',
+                                onClick: () => setMobileView('products'),
+                                className: `px-6 py-3 flex items-center gap-2 ${
+                                    mobileView === 'products' ? 'bg-blue-600 text-white' : 'bg-white text-gray-700'
+                                }`
+                            }, [
+                                React.createElement(Package, { size: 20, key: 'icon' }),
+                                React.createElement('span', { key: 'text' }, '商品')
+                            ]),
+                            React.createElement('button', {
+                                key: 'cart-tab',
+                                onClick: () => setMobileView('cart'),
+                                className: `px-6 py-3 flex items-center gap-2 relative ${
+                                    mobileView === 'cart' ? 'bg-blue-600 text-white' : 'bg-white text-gray-700'
+                                }`
+                            }, [
+                                React.createElement(ShoppingCart, { size: 20, key: 'icon' }),
+                                React.createElement('span', { key: 'text' }, '購物車'),
+                                cart.length > 0 && React.createElement('span', {
+                                    key: 'badge',
+                                    className: 'absolute -top-2 -right-2 bg-red-500 text-white text-xs rounded-full w-6 h-6 flex items-center justify-center'
+                                }, cart.reduce((sum, item) => sum + item.quantity, 0))
+                            ])
+                        ]),
+
+                        // 商品選擇區域
+                        React.createElement('div', {
+                            className: `flex-1 p-4 md:p-6 overflow-auto ${window.innerWidth <= 768 && mobileView === 'cart' ? 'hidden' : ''}`,
+                            key: 'products-area'
+                        }, React.createElement('div', {
+                            className: 'mb-6'
+                        }, [
+                            React.createElement('h2', {
+                                className: 'text-lg md:text-xl font-semibold mb-4',
+                                key: 'products-title'
+                            }, '商品選擇'),
+                            
+                            // 手動輸入商品
+                            React.createElement('div', {
+                                className: 'bg-white p-4 rounded-lg shadow mb-4',
+                                key: 'manual-input'
+                            }, [
+                                React.createElement('h3', {
+                                    className: 'font-medium mb-3',
+                                    key: 'manual-title'
+                                }, '快速新增商品'),
+                                React.createElement('div', {
+                                    className: 'flex flex-col sm:flex-row gap-2',
+                                    key: 'manual-form'
+                                }, [
+                                    React.createElement('input', {
+                                        key: 'manual-name',
+                                        type: 'text',
+                                        placeholder: '商品名稱',
+                                        value: manualProduct.name,
+                                        onChange: (e) => setManualProduct({ ...manualProduct, name: e.target.value }),
+                                        className: 'flex-1 border border-gray-300 rounded px-3 py-3 text-base'
+                                    }),
+                                    React.createElement('input', {
+                                        key: 'manual-price',
+                                        type: 'number',
+                                        placeholder: '價格',
+                                        value: manualProduct.price,
+                                        onChange: (e) => setManualProduct({ ...manualProduct, price: e.target.value }),
+                                        className: 'w-full sm:w-24 border border-gray-300 rounded px-3 py-3 text-base',
+                                        step: '0.01'
+                                    }),
+                                    React.createElement('button', {
+                                        key: 'manual-add',
+                                        onClick: addManualProduct,
+                                        className: 'bg-green-600 text-white px-4 py-3 rounded hover:bg-green-700 disabled:opacity-50 disabled:cursor-not-allowed',
+                                        disabled: !manualProduct.name || !manualProduct.price
+                                    }, React.createElement(Plus, { size: 20 }))
+                                ])
+                            ]),
+                            
+                            // 常用商品
+                            React.createElement('div', {
+                                className: 'grid grid-cols-2 md:grid-cols-3 lg:grid-cols-4 gap-3 md:gap-4 pb-20 md:pb-4',
+                                key: 'product-grid'
+                            }, products.map(product => 
+                                React.createElement('button', {
+                                    key: product.id,
+                                    onClick: () => addToCart(product),
+                                    className: 'bg-white p-4 md:p-4 rounded-lg shadow hover:shadow-md transition-shadow border-2 hover:border-blue-300 min-h-[80px] flex flex-col justify-center'
+                                }, [
+                                    React.createElement('div', {
+                                        className: 'text-base md:text-lg font-medium mb-1 truncate',
+                                        key: 'name'
+                                    }, product.name),
+                                    React.createElement('div', {
+                                        className: 'text-blue-600 font-semibold text-sm md:text-base',
+                                        key: 'price'
+                                    }, `${product.price}`)
+                                ])
+                            ))
+                        ])),
+
+                        // 購物車區域
+                        React.createElement('div', {
+                            className: `w-full md:w-80 bg-white ${window.innerWidth <= 768 ? 'mobile-border' : 'border-l'} p-4 md:p-6 flex flex-col cart-container ${window.innerWidth <= 768 && mobileView === 'products' ? 'hidden' : ''}`,
+                            key: 'cart-area'
+                        }, [
+                            React.createElement('h2', {
+                                className: 'text-lg md:text-xl font-semibold mb-4',
+                                key: 'cart-title'
+                            }, '購物車'),
+                            
+                            React.createElement('div', {
+                                className: 'flex-1 overflow-auto mb-4',
+                                key: 'cart-items'
+                            }, cart.map(item => 
+                                React.createElement('div', {
+                                    key: item.id,
+                                    className: 'flex items-center justify-between p-3 border-b hover:bg-gray-50 rounded'
+                                }, [
+                                    React.createElement('div', {
+                                        className: 'flex-1 min-w-0',
+                                        key: 'item-info'
+                                    }, [
+                                        React.createElement('div', {
+                                            className: 'font-medium truncate text-base',
+                                            key: 'item-name'
+                                        }, item.name),
+                                        React.createElement('div', {
+                                            className: 'text-sm text-gray-600',
+                                            key: 'item-detail'
+                                        }, `${item.price} × ${item.quantity}`)
+                                    ]),
+                                    React.createElement('div', {
+                                        className: 'flex items-center gap-2 ml-2',
+                                        key: 'item-controls'
+                                    }, [
+                                        React.createElement('button', {
+                                            key: 'decrease',
+                                            onClick: () => updateCartQuantity(item.id, item.quantity - 1),
+                                            className: 'w-8 h-8 bg-gray-200 rounded text-center hover:bg-gray-300 flex items-center justify-center text-lg font-bold'
+                                        }, '-'),
+                                        React.createElement('span', {
+                                            key: 'quantity',
+                                            className: 'w-8 text-center font-medium'
+                                        }, item.quantity),
+                                        React.createElement('button', {
+                                            key: 'increase',
+                                            onClick: () => updateCartQuantity(item.id, item.quantity + 1),
+                                            className: 'w-8 h-8 bg-gray-200 rounded text-center hover:bg-gray-300 flex items-center justify-center text-lg font-bold'
+                                        }, '+'),
+                                        React.createElement('button', {
+                                            key: 'remove',
+                                            onClick: () => removeFromCart(item.id),
+                                            className: 'text-red-600 hover:text-red-800 p-1 rounded hover:bg-red-50'
+                                        }, React.createElement(Trash2, { size: 16 }))
+                                    ])
+                                ])
+                            )),
+                            
+                            React.createElement('div', {
+                                className: 'border-t pt-4',
+                                key: 'checkout-area'
+                            }, [
+                                React.createElement('div', {
+                                    className: 'text-xl font-bold mb-4',
+                                    key: 'total'
+                                }, `總計: ${cartTotal}`),
+                                React.createElement('button', {
+                                    key: 'checkout-btn',
+                                    onClick: checkout,
+                                    className: 'w-full bg-blue-600 text-white py-3 rounded-lg font-semibold hover:bg-blue-700 disabled:opacity-50 disabled:cursor-not-allowed text-lg',
+                                    disabled: cart.length === 0
+                                }, '結帳')
+                            ])
+                        ])
+                    ]),
+
+                    // 商品管理頁面
+                    currentPage === 'products' && React.createElement('div', {
+                        className: 'flex-1 p-4 md:p-6 overflow-auto',
+                        key: 'products-page'
+                    }, [
+                        React.createElement('div', {
+                            className: 'flex justify-between items-center mb-6',
+                            key: 'products-header'
+                        }, [
+                            React.createElement('h2', {
+                                className: 'text-xl font-semibold',
+                                key: 'products-title'
+                            }, '商品管理'),
+                            React.createElement('div', {
+                                className: 'flex gap-2',
+                                key: 'products-buttons'
+                            }, [
+                                React.createElement('button', {
+                                    key: 'test-btn',
+                                    onClick: () => {
+                                        console.log('測試按鈕被點擊');
+                                        showAlertMessage('測試按鈕正常工作！');
+                                    },
+                                    className: 'bg-yellow-500 text-white px-3 py-2 rounded-lg text-sm hover:bg-yellow-600'
+                                }, '測試'),
+                                React.createElement('button', {
+                                    key: 'add-product-btn',
+                                    onClick: () => {
+                                        console.log('新增按鈕被點擊');
+                                        setShowProductModal(true);
+                                    },
+                                    className: 'bg-blue-600 text-white px-4 py-2 rounded-lg flex items-center gap-2 hover:bg-blue-700'
+                                }, [
+                                    React.createElement(Plus, { size: 20, key: 'icon' }),
+                                    React.createElement('span', { key: 'text', className: 'hidden sm:inline' }, '新增商品')
+                                ])
+                            ])
+                        ]),
+                        
+                        React.createElement('div', {
+                            className: 'bg-white rounded-lg shadow overflow-hidden',
+                            key: 'products-container'
+                        }, [
+                            React.createElement('div', {
+                                className: 'p-4 bg-gray-50 border-b',
+                                key: 'products-info'
+                            }, React.createElement('p', {
+                                className: 'text-sm text-gray-600'
+                            }, [
+                                '目前共有 ',
+                                React.createElement('span', {
+                                    className: 'font-semibold',
+                                    key: 'count'
+                                }, products.length),
+                                ' 項商品'
+                            ])),
+                            
+                            products.length === 0 ? React.createElement('div', {
+                                className: 'p-8 text-center text-gray-500',
+                                key: 'empty-products'
+                            }, [
+                                React.createElement(Package, { size: 48, className: 'mx-auto mb-4 text-gray-300', key: 'icon' }),
+                                React.createElement('p', { key: 'text' }, '尚無商品資料，請先新增商品')
+                            ]) : React.createElement('div', {
+                                className: 'grid gap-4 p-4',
+                                key: 'products-list'
+                            }, products.map((product, index) => 
+                                React.createElement('div', {
+                                    key: product.id,
+                                    className: 'flex items-center justify-between p-4 border rounded-lg hover:bg-gray-50'
+                                }, [
+                                    React.createElement('div', {
+                                        className: 'flex-1',
+                                        key: 'product-info'
+                                    }, React.createElement('div', {
+                                        className: 'flex items-center gap-4'
+                                    }, [
+                                        React.createElement('div', {
+                                            className: 'w-8 h-8 bg-blue-100 rounded-full flex items-center justify-center text-blue-600 font-semibold text-sm',
+                                            key: 'product-number'
+                                        }, index + 1),
+                                        React.createElement('div', { key: 'product-details' }, [
+                                            React.createElement('h3', {
+                                                className: 'font-medium text-gray-900',
+                                                key: 'product-name'
+                                            }, product.name),
+                                            React.createElement('p', {
+                                                className: 'text-sm text-gray-500',
+                                                key: 'product-id'
+                                            }, `ID: ${product.id}`)
+                                        ])
+                                    ])),
+                                    
+                                    React.createElement('div', {
+                                        className: 'flex items-center gap-4',
+                                        key: 'product-actions'
+                                    }, [
+                                        React.createElement('div', {
+                                            className: 'text-right',
+                                            key: 'product-price'
+                                        }, [
+                                            React.createElement('p', {
+                                                className: 'font-semibold text-gray-900',
+                                                key: 'price-value'
+                                            }, `${product.price}`),
+                                            React.createElement('p', {
+                                                className: 'text-xs text-gray-500',
+                                                key: 'price-label'
+                                            }, '價格')
+                                        ]),
+                                        
+                                        React.createElement('div', {
+                                            className: 'flex gap-1',
+                                            key: 'action-buttons'
+                                        }, [
+                                            React.createElement('button', {
+                                                key: 'edit-btn',
+                                                onClick: (e) => {
+                                                    e.preventDefault();
+                                                    console.log('編輯按鈕被點擊，商品:', product);
+                                                    setEditingProduct(product);
+                                                    setShowProductModal(true);
+                                                },
+                                                className: 'p-2 text-blue-600 hover:text-blue-800 hover:bg-blue-50 rounded-md transition-colors',
+                                                title: '編輯商品'
+                                            }, React.createElement(Edit, { size: 18 })),
+                                            
+                                            React.createElement('button', {
+                                                key: 'delete-btn',
+                                                onClick: (e) => {
+                                                    e.preventDefault();
+                                                    e.stopPropagation();
+                                                    
+                                                    console.log('刪除按鈕被點擊，商品:', product);
+                                                    
+                                                    showConfirm(
+                                                        `確定要刪除商品「${product.name}」嗎？\n\n商品ID: ${product.id}`,
+                                                        () => deleteProduct(product.id, product.name)
+                                                    );
+                                                },
+                                                className: 'p-2 text-red-600 hover:text-red-800 hover:bg-red-50 rounded-md transition-colors',
+                                                title: '刪除商品'
+                                            }, React.createElement(Trash2, { size: 18 }))
+                                        ])
+                                    ])
+                                ])
+                            ))
+                        ])
+                    ]),
+
+                    // 其他頁面保持原樣...
+                    currentPage === 'reports' && React.createElement('div', {
+                        className: 'flex-1 p-4 md:p-6 overflow-auto',
+                        key: 'reports-page'
+                    }, '報表功能'),
+
+                    currentPage === 'backup' && React.createElement('div', {
+                        className: 'flex-1 p-4 md:p-6 overflow-auto', 
+                        key: 'backup-page'
+                    }, '備份功能')
+                ]),
+
+                // 模態框
+                showProductModal && React.createElement(ProductModal, { key: 'product-modal' }),
+
+                // 確認對話框
+                showConfirmModal && React.createElement('div', {
+                    className: 'fixed inset-0 bg-black bg-opacity-50 flex items-center justify-center z-50 p-4',
+                    key: 'confirm-modal'
+                }, React.createElement('div', {
+                    className: 'bg-white rounded-lg p-6 w-full max-w-md'
+                }, [
+                    React.createElement('div', {
+                        className: 'mb-4',
+                        key: 'confirm-content'
+                    }, [
+                        React.createElement('h3', {
+                            className: 'text-lg font-semibold text-gray-900 mb-2',
+                            key: 'confirm-title'
+                        }, '確認操作'),
+                        React.createElement('p', {
+                            className: 'text-gray-600 whitespace-pre-line',
+                            key: 'confirm-message'
+                        }, confirmMessage)
+                    ]),
+                    React.createElement('div', {
+                        className: 'flex gap-2 justify-end',
+                        key: 'confirm-buttons'
+                    }, [
+                        React.createElement('button', {
+                            key: 'cancel-btn',
+                            onClick: handleCancel,
+                            className: 'px-4 py-2 bg-gray-300 text-gray-700 rounded-md hover:bg-gray-400'
+                        }, '取消'),
+                        React.createElement('button', {
+                            key: 'confirm-btn',
+                            onClick: handleConfirm,
+                            className: 'px-4 py-2 bg-red-600 text-white rounded-md hover:bg-red-700'
+                        }, '確定刪除')
+                    ])
+                ])),
+
+                // 提示對話框
+                showAlert && React.createElement('div', {
+                    className: 'fixed inset-0 bg-black bg-opacity-50 flex items-center justify-center z-50 p-4',
+                    key: 'alert-modal'
+                }, React.createElement('div', {
+                    className: 'bg-white rounded-lg p-6 w-full max-w-md'
+                }, [
+                    React.createElement('div', {
+                        className: 'mb-4',
+                        key: 'alert-content'
+                    }, [
+                        React.createElement('h3', {
+                            className: 'text-lg font-semibold text-gray-900 mb-2',
+                            key: 'alert-title'
+                        }, '提示訊息'),
+                        React.createElement('p', {
+                            className: 'text-gray-600',
+                            key: 'alert-message'
+                        }, alertMessage)
+                    ]),
+                    React.createElement('div', {
+                        className: 'flex justify-end',
+                        key: 'alert-button'
+                    }, React.createElement('button', {
+                        onClick: () => setShowAlert(false),
+                        className: 'px-4 py-2 bg-blue-600 text-white rounded-md hover:bg-blue-700'
+                    }, '確定'))
+                ]))
+            ]);
+        };
+
+        ReactDOM.render(React.createElement(POS), document.getElementById('root'));
+    </script>
+</body>
 </html>
