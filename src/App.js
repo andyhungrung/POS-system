@@ -1,3 +1,4 @@
+import React, { useState, useEffect } from 'react';
 import { ShoppingCart, Package, BarChart3, Settings, Plus, Trash2, Edit, Download, Upload, Save, X } from 'lucide-react';
 import { PieChart, Pie, Cell, ResponsiveContainer, BarChart, Bar, XAxis, YAxis, CartesianGrid, Tooltip, Legend } from 'recharts';
 
@@ -1254,5 +1255,6 @@ const POS = () => {
     </div>
   );
 };
+
 
 export default POS;
